@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
 import { supabase } from './services';
 import { TRANSLATIONS } from './constants';
@@ -109,8 +110,8 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
     useEffect(() => {
         const fetchUserAndProfile = async (supabaseUser: SupabaseUser | null) => {
             if (supabaseUser) {
-                const { data: profile, error } = await supabase
-                    .from('profiles')
+                const profilesTable: any = supabase.from('profiles');
+                const { data: profile, error } = await profilesTable
                     .select('*')
                     .eq('id', supabaseUser.id)
                     .single();
