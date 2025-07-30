@@ -4,7 +4,7 @@ import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer, BarChart, Ba
 import { ChevronDown, PlusCircle, Trash2, Edit, Save, X, Menu, FileDown, Settings, Sparkles, Loader as LoaderIcon, Copy as CopyIcon, Check, Upload, Link2, LayoutDashboard, List, PencilRuler, FileText, Sheet, Sun, Moon, LogOut, Wand2, FilePlus2, ArrowLeft, MoreVertical, User as UserIcon, LucideProps, AlertTriangle, KeyRound, ImageIcon, Download } from 'lucide-react';
 import { marked } from 'marked';
 import { useLanguage, useTheme, useAuth } from './contexts';
-import { callGeminiAPI, formatCurrency, formatPercentage, formatNumber, recalculateCampaignMetrics, calculateKPIs, getPublicPlanById, getPublicProfileByUserId, sortMonthKeys, generateAIKeywords, generateAIImages, exportCreativesAsCSV, exportCreativesAsTXT, exportUTMLinksAsCSV, exportUTMLinksAsTXT, calculatePlanSummary } from './services';
+import { callGeminiAPI, callGeminiAPIStream, formatCurrency, formatPercentage, formatNumber, recalculateCampaignMetrics, calculateKPIs, getPublicPlanById, getPublicProfileByUserId, sortMonthKeys, generateAIKeywords, generateAIImages, exportCreativesAsCSV, exportCreativesAsTXT, exportUTMLinksAsCSV, exportUTMLinksAsTXT, calculatePlanSummary } from './services';
 import { TRANSLATIONS, OPTIONS, COLORS, MONTHS_LIST, CHANNEL_FORMATS, DEFAULT_METRICS_BY_OBJECTIVE } from './constants';
 import {
     PlanData, Campaign, CreativeTextData, UTMLink, MonthlySummary, SummaryData, KeywordSuggestion, AdGroup,
@@ -166,7 +166,7 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({ isOpen, onClose, o
             
             Provide only the audience description text, with no preamble. For example: "Young professionals aged 25-35 interested in productivity software and tech news."`;
             
-            const suggestion = await callGeminiAPI(prompt);
+            const suggestion = await callGeminiAPI(prompt, false);
             setAISuggestion(suggestion);
         } catch (error) {
             console.error(error);
@@ -1140,37 +1140,48 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ planData, onNaviga
 
     const { summary, monthlySummary } = useMemo(() => calculatePlanSummary(planData), [planData]);
 
-    const handleAnalyzePlan = async () => {
+    const handleAnalyzePlan = () => {
         setAIAnalysisModalOpen(true);
         setIsAIAnalysisLoading(true);
-        try {
-            const langInstruction = language === 'pt-BR' ? 'Responda em Português.' : 'Respond in English.';
-            const prompt = `
-                Analyze the following media plan summary. Provide a concise, strategic analysis in markdown format. 
-                Focus on:
-                1.  **Alignment**: Is the budget distribution aligned with the plan's main objective?
-                2.  **Opportunities**: Identify potential optimizations, channels to explore, or funnel stages to reinforce.
-                3.  **Risks**: Point out any potential risks like over-reliance on one channel or unrealistic KPIs.
-                4.  **Actionable Recommendations**: Give 2-3 clear, actionable next steps.
-                
-                ${langInstruction}
+        setAIAnalysisContent(''); // Clear previous content
 
-                **Plan Data:**
-                - Main Objective: ${planData.objective}
-                - Target Audience: ${planData.targetAudience}
-                - Total Investment: ${formatCurrency(summary.budget)}
-                - Period: ${Object.keys(planData.months).join(', ')}
-                - Investment distribution by channel: ${JSON.stringify(summary.channelBudgets)}
-                - Key Metrics: Clicks: ${summary.cliques}, Conversions: ${summary.conversoes}, CTR: ${formatPercentage(summary.ctr)}, CPA: ${formatCurrency(summary.cpa)}
-            `;
-            const analysis = await callGeminiAPI(prompt);
-            setAIAnalysisContent(analysis);
-        } catch (error) {
-            console.error(error);
-            setAIAnalysisContent(`<p style="color: red;">${t('Erro ao analisar plano com IA.')}</p>`);
-        } finally {
-            setIsAIAnalysisLoading(false);
-        }
+        const langInstruction = language === 'pt-BR' ? 'Responda em Português.' : 'Respond in English.';
+        const prompt = `
+            Analyze the following media plan summary. Provide a concise, strategic analysis in markdown format. 
+            Focus on:
+            1.  **Alignment**: Is the budget distribution aligned with the plan's main objective?
+            2.  **Opportunities**: Identify potential optimizations, channels to explore, or funnel stages to reinforce.
+            3.  **Risks**: Point out any potential risks like over-reliance on one channel or unrealistic KPIs.
+            4.  **Actionable Recommendations**: Give 2-3 clear, actionable next steps.
+            
+            ${langInstruction}
+
+            **Plan Data:**
+            - Main Objective: ${planData.objective}
+            - Target Audience: ${planData.targetAudience}
+            - Total Investment: ${formatCurrency(summary.budget)}
+            - Period: ${Object.keys(planData.months).join(', ')}
+            - Investment distribution by channel: ${JSON.stringify(summary.channelBudgets)}
+            - Key Metrics: Clicks: ${summary.cliques}, Conversions: ${summary.conversoes}, CTR: ${formatPercentage(summary.ctr)}, CPA: ${formatCurrency(summary.cpa)}
+        `;
+        
+        callGeminiAPIStream(
+            prompt,
+            (chunk) => {
+                // First chunk received, so we can stop the main loading spinner
+                if (isAIAnalysisLoading) setIsAIAnalysisLoading(false); 
+                setAIAnalysisContent(prev => prev + chunk);
+            },
+            (error) => {
+                console.error(error);
+                setAIAnalysisContent(`<p style="color: red;">${t('Erro ao analisar plano com IA.')}</p>`);
+                setIsAIAnalysisLoading(false);
+            },
+            () => {
+                // Stream finished
+                setIsAIAnalysisLoading(false);
+            }
+        );
     };
 
     const handleRegenerate = async (prompt: string) => {
