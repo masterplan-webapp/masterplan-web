@@ -200,9 +200,9 @@ export const AuthProvider: React.FC<{children: React.ReactNode}> = ({ children }
             return; // Nothing to update
         }
 
-        const { data, error } = await supabase
-            .from('profiles')
-            .upsert(upsertPayload as any)
+        const profilesTable: any = supabase.from('profiles');
+        const { data, error } = await profilesTable
+            .upsert(upsertPayload)
             .select()
             .single();
 
