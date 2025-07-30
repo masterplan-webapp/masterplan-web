@@ -1,3 +1,4 @@
+
 import { GoogleGenAI } from "@google/genai";
 
 export const runtime = 'edge';
@@ -20,29 +21,59 @@ export default async function POST(request: Request) {
         }
 
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [{ parts: [{ text: prompt }] }],
-            ...(isJson && { config: { responseMimeType: "application/json" } })
-        });
         
-        const text = response.text.trim();
-        let data;
         if (isJson) {
-            const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
-            const jsonString = jsonMatch ? jsonMatch[1] : text;
+            // Keep original non-streaming logic for JSON requests
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: [{ parts: [{ text: prompt }] }],
+                config: { responseMimeType: "application/json" }
+            });
+            const text = response.text.trim();
+            let data;
             try {
-                 data = JSON.parse(jsonString);
+                 data = JSON.parse(text);
             } catch (e) {
                  return createErrorResponse("AI returned invalid JSON.", 500);
             }
-        } else {
-            data = text;
+            return new Response(JSON.stringify(data), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            });
         }
+        
+        // Handle text streaming
+        const stream = await ai.models.generateContentStream({
+            model: 'gemini-2.5-flash',
+            contents: [{ parts: [{ text: prompt }] }],
+        });
 
-        return new Response(JSON.stringify(data), {
+        const { readable, writable } = new TransformStream();
+        const writer = writable.getWriter();
+        const encoder = new TextEncoder();
+
+        (async () => {
+            try {
+                for await (const chunk of stream) {
+                    const text = chunk.text;
+                    if (text) {
+                        await writer.write(encoder.encode(text));
+                    }
+                }
+            } catch (e) {
+                console.error('Streaming error in call-gemini:', e);
+                await writer.abort(e as any);
+            } finally {
+                await writer.close();
+            }
+        })();
+
+        return new Response(readable, {
             status: 200,
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'text/plain; charset=utf-8',
+                'X-Content-Type-Options': 'nosniff',
+            },
         });
 
     } catch (error: any) {
