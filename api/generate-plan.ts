@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 
 // Duplicated from constants.ts to ensure bundling
@@ -106,7 +107,7 @@ ${langInstruction}`;
             required: ["campaignName", "objective", "targetAudience", "location", "totalInvestment", "months"]
         };
 
-        const response = await ai.models.generateContent({
+        const stream = await ai.models.generateContentStream({
             model: "gemini-2.5-flash",
             contents: [{ parts: [{ text: `Business Description: "${userPrompt}"` }] }],
             config: {
@@ -116,12 +117,32 @@ ${langInstruction}`;
             },
         });
 
-        const text = response.text.trim();
-        const aiData = JSON.parse(text);
+        const { readable, writable } = new TransformStream();
+        const writer = writable.getWriter();
+        const encoder = new TextEncoder();
 
-        return new Response(JSON.stringify(aiData), {
+        (async () => {
+            try {
+                for await (const chunk of stream) {
+                    const text = chunk.text;
+                    if (text) {
+                        await writer.write(encoder.encode(text));
+                    }
+                }
+            } catch (e: any) {
+                console.error('Streaming error in generate-plan:', e);
+                await writer.abort(e as any);
+            } finally {
+                await writer.close();
+            }
+        })();
+
+        return new Response(readable, {
             status: 200,
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json; charset=utf-8',
+                'X-Content-Type-Options': 'nosniff',
+            },
         });
 
     } catch (error: any) {
