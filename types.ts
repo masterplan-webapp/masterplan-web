@@ -1,4 +1,3 @@
-import { GoogleGenAI } from '@google/genai';
 
 // --- Database Schema Definition ---
 export type Json =
