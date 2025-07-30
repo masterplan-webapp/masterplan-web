@@ -1,7 +1,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { Database, PlanData, Campaign, User, LanguageCode, KeywordSuggestion, CreativeTextData, AdGroup, UTMLink, GeneratedImage, AspectRatio, SummaryData, MonthlySummary } from './types';
-import { MONTHS_LIST, OPTIONS, CHANNEL_FORMATS, DEFAULT_METRICS_BY_OBJECTIVE } from "./constants";
+import { MONTHS_LIST, OPTIONS, CHANNEL_FORMATS, DEFAULT_METRICS_BY_OBJECTIVE, TRANSLATIONS } from "./constants";
 
 
 // --- Supabase Client ---
@@ -405,7 +405,8 @@ async function fetchFromApi(endpoint: string, body: any) {
     return response.json();
 }
 
-export const callGeminiAPI = async (prompt: string, isJson: boolean = false): Promise<any> => {
+// For non-streaming JSON requests
+export const callGeminiAPI = async (prompt: string, isJson: boolean = true): Promise<any> => {
     try {
         const result = await fetchFromApi('/api/call-gemini', { prompt, isJson });
         return result;
@@ -415,9 +416,80 @@ export const callGeminiAPI = async (prompt: string, isJson: boolean = false): Pr
     }
 };
 
+// New function for streaming text responses
+export const callGeminiAPIStream = async (
+    prompt: string, 
+    onChunk: (chunk: string) => void,
+    onError: (error: Error) => void,
+    onCompletion: () => void
+) => {
+    try {
+        const response = await fetch('/api/call-gemini', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt, isJson: false }),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: 'Failed to parse error response' }));
+            throw new Error(errorData.error || `Request failed with status ${response.status}`);
+        }
+        
+        if (!response.body) {
+            throw new Error("Response body is empty");
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+                break;
+            }
+            onChunk(decoder.decode(value, { stream: true }));
+        }
+        onCompletion();
+
+    } catch (error: any) {
+        console.error("Gemini API stream failed:", error);
+        onError(error);
+    }
+};
+
+
 export const generateAIPlan = async (userPrompt: string, language: LanguageCode): Promise<Partial<PlanData>> => {
     try {
-        const aiData = await fetchFromApi('/api/generate-plan', { userPrompt, language });
+        // This now handles a stream to prevent timeouts
+        const response = await fetch('/api/generate-plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userPrompt, language }),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: 'Failed to parse error response' }));
+            throw new Error(errorData.error || `Request failed with status ${response.status}`);
+        }
+        
+        if (!response.body) {
+            throw new Error("Response body is empty");
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let accumulatedJson = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+                break;
+            }
+            accumulatedJson += decoder.decode(value, { stream: true });
+        }
+        
+        // At the end, parse the full JSON string.
+        const aiData = JSON.parse(accumulatedJson);
         
         // Transform the months array into a Record<string, Campaign[]>
         const transformedMonths = (aiData.months || []).reduce((acc: Record<string, Campaign[]>, item: { month: string; campaigns: Campaign[] }) => {
@@ -433,10 +505,11 @@ export const generateAIPlan = async (userPrompt: string, language: LanguageCode)
 
     } catch (error: any) {
         console.error("Error generating AI plan via proxy:", error);
-        if (error.message.includes('format')) { // Check for schema/format error message
-            throw new Error("The AI response did not match the required format. Please try again.");
+        // Using hardcoded strings as this service doesn't have access to the language context/t function
+        if (error.message.includes('format') || error.message.includes('JSON')) {
+             throw new Error("A resposta da IA não retornou um plano válido.");
         }
-        throw new Error("Failed to parse AI response or call API.");
+        throw new Error("Erro ao criar o plano com IA. Por favor, tente novamente.");
     }
 };
 
