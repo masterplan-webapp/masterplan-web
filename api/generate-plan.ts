@@ -121,6 +121,7 @@ ${langInstruction}`;
         const writer = writable.getWriter();
         const encoder = new TextEncoder();
 
+        // Asynchronously pipe the stream from Gemini to the client
         (async () => {
             try {
                 for await (const chunk of stream) {
@@ -129,11 +130,12 @@ ${langInstruction}`;
                         await writer.write(encoder.encode(text));
                     }
                 }
+                // On success, close the writer to signal the end of the stream
+                await writer.close();
             } catch (e: any) {
                 console.error('Streaming error in generate-plan:', e);
-                await writer.abort(e as any);
-            } finally {
-                await writer.close();
+                // On error, abort the writer to propagate the error to the client
+                await writer.abort(e);
             }
         })();
 
