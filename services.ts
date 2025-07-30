@@ -1,11 +1,4 @@
 
-
-
-
-
-
-
-import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
 import { createClient } from '@supabase/supabase-js';
 import { Database, PlanData, Campaign, User, LanguageCode, KeywordSuggestion, CreativeTextData, AdGroup, UTMLink, GeneratedImage, AspectRatio, SummaryData, MonthlySummary } from './types';
 import { MONTHS_LIST, OPTIONS, CHANNEL_FORMATS, DEFAULT_METRICS_BY_OBJECTIVE } from "./constants";
@@ -24,19 +17,6 @@ if (supabaseUrl.includes('YOUR_SUPABASE_URL_HERE')) {
 }
 
 export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey);
-
-
-// --- Gemini API Helper ---
-// Lazy-initialize the AI client to prevent a crash on load if API_KEY is missing.
-let ai: GoogleGenAI | null = null;
-const getAiClient = (): GoogleGenAI => {
-    if (!ai) {
-        // This will only be called when an AI function is used for the first time.
-        // It assumes process.env.API_KEY is available at that point.
-        ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    }
-    return ai;
-};
 
 
 // --- UTILITY FUNCTIONS ---
@@ -407,109 +387,38 @@ export const createNewPlanFromTemplate = async (userId: string): Promise<PlanDat
 
 // --- AI & Generation Services ---
 
+async function fetchFromApi(endpoint: string, body: any) {
+    const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to parse error response' }));
+        console.error(`API call to ${endpoint} failed:`, errorData.error);
+        throw new Error(errorData.error || `Request failed with status ${response.status}`);
+    }
+
+    return response.json();
+}
+
 export const callGeminiAPI = async (prompt: string, isJson: boolean = false): Promise<any> => {
     try {
-        const aiClient = getAiClient();
-        const response = await aiClient.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [{ parts: [{ text: prompt }] }],
-            ...(isJson && { config: { responseMimeType: "application/json" } })
-        });
-        
-        const text = response.text.trim();
-
-        if (isJson) {
-            const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
-            const jsonString = jsonMatch ? jsonMatch[1] : text;
-            return JSON.parse(jsonString);
-        }
-        return text;
+        const result = await fetchFromApi('/api/call-gemini', { prompt, isJson });
+        return result;
     } catch (error) {
-        console.error("Gemini API call failed:", error);
+        console.error("Gemini API call failed via proxy:", error);
         throw new Error("Failed to get response from AI.");
     }
 };
 
 export const generateAIPlan = async (userPrompt: string, language: LanguageCode): Promise<Partial<PlanData>> => {
-    const langInstruction = language === 'pt-BR' ?
-        'Responda em Português do Brasil. O nome dos meses DEVE estar em português (Janeiro, Fevereiro, etc.).' :
-        'Respond in English. Month names MUST be in English (January, February, etc.).';
-
-    const systemInstruction = `You are a senior media planner. Your task is to create a digital media plan from a user's description.
-- Analyze the user's prompt to determine the time period for the plan (e.g., "for the next quarter", "for July and August 2024", "for the last quarter of the year").
-- If no period is specified, create a plan for the next 3 months starting from the current date.
-- The output MUST be a valid JSON object, with no additional text or explanations. Do not use markdown.
-- For each campaign, you must provide:
-  - 'publicoAlvo': A specific target audience, refining the main 'targetAudience' for that campaign's specific goal.
-  - 'kpi': The main Key Performance Indicators (e.g., "Cliques, CPC", "Impressões, Alcance").
-  - 'unidadeCompra': Select 'CPC' for performance-oriented campaigns (like Tráfego, Conversão) and 'CPM' for reach/awareness campaigns (like Awareness, Alcance).
-- For the campaign's 'formato' field, you MUST select an appropriate value from the predefined list for the chosen 'canal'. Do not invent new formats. The available formats are: ${JSON.stringify(CHANNEL_FORMATS)}.
-- For 'logoUrl', use the placehold.co API to generate a placeholder logo. Example: https://placehold.co/400x300/f472b6/ffffff?text=YourBrand
-- For 'aiImagePrompt', create a concise text-to-image prompt that captures the brand's essence.
-${langInstruction}`;
-
-    const campaignSchema = {
-        type: Type.OBJECT,
-        properties: {
-            tipoCampanha: { type: Type.STRING, enum: OPTIONS.tipoCampanha },
-            etapaFunil: { type: Type.STRING, enum: OPTIONS.etapaFunil },
-            canal: { type: Type.STRING, enum: OPTIONS.canal },
-            formato: { type: Type.STRING },
-            objetivo: { type: Type.STRING },
-            publicoAlvo: { type: Type.STRING, description: "A specific target audience for this campaign, derived from the main plan audience." },
-            kpi: { type: Type.STRING, description: "Key Performance Indicators for the campaign, e.g., 'Cliques, CPC'." },
-            budget: { type: Type.NUMBER },
-            unidadeCompra: { type: Type.STRING, enum: ["CPC", "CPM", "CPV"], description: "The buying unit. Use 'CPC' for performance goals (Traffic, Conversion) and 'CPM' for awareness goals." }
-        },
-        required: ["tipoCampanha", "etapaFunil", "canal", "formato", "objetivo", "publicoAlvo", "kpi", "budget", "unidadeCompra"]
-    };
-
-    const schema = {
-        type: Type.OBJECT,
-        properties: {
-            campaignName: { type: Type.STRING },
-            objective: { type: Type.STRING },
-            targetAudience: { type: Type.STRING },
-            location: { type: Type.STRING },
-            totalInvestment: { type: Type.NUMBER },
-            logoUrl: { type: Type.STRING },
-            aiImagePrompt: { type: Type.STRING },
-            months: {
-                type: Type.ARRAY,
-                description: "An array of monthly plans. Each item must contain the month key and the campaigns for that month.",
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        month: {
-                            type: Type.STRING,
-                            description: "The month for this plan segment, in 'YYYY-MonthName' format (e.g., '2024-Janeiro'). Month name must be in the specified language."
-                        },
-                        campaigns: {
-                            type: Type.ARRAY,
-                            items: campaignSchema
-                        }
-                    },
-                    required: ["month", "campaigns"]
-                }
-            }
-        },
-        required: ["campaignName", "objective", "targetAudience", "location", "totalInvestment", "months"]
-    };
-
     try {
-        const aiClient = getAiClient();
-        const response = await aiClient.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: [{ parts: [{ text: `Business Description: "${userPrompt}"` }] }],
-            config: {
-                systemInstruction: systemInstruction,
-                responseMimeType: "application/json",
-                responseSchema: schema
-            },
-        });
-        const text = response.text.trim();
-        const aiData = JSON.parse(text);
-
+        const aiData = await fetchFromApi('/api/generate-plan', { userPrompt, language });
+        
         // Transform the months array into a Record<string, Campaign[]>
         const transformedMonths = (aiData.months || []).reduce((acc: Record<string, Campaign[]>, item: { month: string; campaigns: Campaign[] }) => {
             if (item.month && item.campaigns) {
@@ -522,46 +431,31 @@ ${langInstruction}`;
         const { months, ...restOfAiData } = aiData;
         return { ...restOfAiData, months: transformedMonths };
 
-    } catch (error) {
-        console.error("Error generating AI plan:", error);
-        if (error instanceof Error && (error.message.includes('responseSchema') || error.message.includes('JSON'))) {
+    } catch (error: any) {
+        console.error("Error generating AI plan via proxy:", error);
+        if (error.message.includes('format')) { // Check for schema/format error message
             throw new Error("The AI response did not match the required format. Please try again.");
         }
         throw new Error("Failed to parse AI response or call API.");
     }
 };
 
-
 export const generateAIKeywords = async (plan: PlanData, mode: 'seed' | 'prompt', input: string, language: LanguageCode): Promise<KeywordSuggestion[]> => {
-    const langInstruction = language === 'pt-BR' ? 'Responda em Português do Brasil.' : 'Respond in English.';
-    const systemInstruction = `You are an SEO and SEM expert. Your task is to generate a list of relevant keywords. For each keyword, provide an estimated monthly search volume (integer), click potential (integer), and a min/max CPC (float). The result MUST be a valid JSON array of keyword objects. Do not include additional text or markdown. ${langInstruction}`;
-    const prompt = `Generate 20 keywords for the following context:\n- Plan Objective: ${plan.objective}\n- Target Audience: ${plan.targetAudience}\n- ${mode === 'seed' ? 'Seed Keywords' : 'Description'}: ${input}`;
-    const schema = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { keyword: { type: Type.STRING }, volume: { type: Type.INTEGER }, clickPotential: { type: Type.INTEGER }, minCpc: { type: Type.NUMBER }, maxCpc: { type: Type.NUMBER } }, required: ["keyword", "volume", "clickPotential", "minCpc", "maxCpc"] } };
-
-    try {
-        const aiClient = getAiClient();
-        const response = await aiClient.models.generateContent({ model: "gemini-2.5-flash", contents: [{ parts: [{ text: prompt }] }], config: { systemInstruction, responseMimeType: "application/json", responseSchema: schema } });
-        return JSON.parse(response.text.trim());
+     try {
+        const keywords = await fetchFromApi('/api/generate-keywords', { plan, mode, input, language });
+        return keywords;
     } catch (error) {
-        console.error("Error generating keywords:", error);
+        console.error("Error generating keywords via proxy:", error);
         throw new Error("Failed to generate keywords from AI.");
     }
 };
 
 export const generateAIImages = async (prompt: string): Promise<GeneratedImage[]> => {
     try {
-        const aiClient = getAiClient();
-        const aspectRatios: AspectRatio[] = ['1:1', '16:9', '9:16', '3:4'];
-        const imagePromises = aspectRatios.map(aspectRatio =>
-            aiClient.models.generateImages({ model: 'imagen-3.0-generate-002', prompt, config: { numberOfImages: 1, outputMimeType: 'image/jpeg', aspectRatio } })
-        );
-        const responses = await Promise.all(imagePromises);
-        return responses.map((response, index) => ({
-            base64: response.generatedImages[0].image.imageBytes,
-            aspectRatio: aspectRatios[index],
-        }));
+        const images = await fetchFromApi('/api/generate-images', { prompt });
+        return images;
     } catch (error) {
-        console.error("Error generating images:", error);
+        console.error("Error generating images via proxy:", error);
         throw new Error("Failed to generate images from AI.");
     }
 };
